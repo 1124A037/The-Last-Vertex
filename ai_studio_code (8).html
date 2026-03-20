@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <title>最後的頂點 - 戰場醫療版 V2.4</title>
+    <style>
+        body { margin: 0; background: #000; color: white; font-family: 'Courier New', Courier, monospace; overflow: hidden; display: flex; justify-content: center; align-items: center; height: 100vh; }
+        canvas { border: 2px solid #333; image-rendering: pixelated; background: #010101; cursor: crosshair; }
+        
+        #ui-overlay { position: absolute; text-align: center; pointer-events: none; width: 100%; height: 100%; display: flex; flex-direction: column; justify-content: center; align-items: center; }
+        
+        .intro-screen { 
+            pointer-events: auto; background: rgba(0,0,0,0.98); padding: 70px; 
+            border-left: 8px solid #0ff; width: 850px; text-align: left; 
+            box-shadow: -20px 0 60px rgba(0, 255, 255, 0.15); 
+        }
+        .intro-line { margin-bottom: 25px; font-size: 26px; line-height: 1.8; min-height: 1.8em; color: #0ff; letter-spacing: 2px; }
+        .mission-objective { 
+            color: #fff; font-weight: bold; border-top: 2px solid #444; 
+            padding-top: 30px; margin-top: 30px; font-size: 28px; 
+            text-shadow: 0 0 15px #0ff; letter-spacing: 1px;
+        }
+        .skip-tip { font-size: 14px; color: #555; margin-top: 10px; text-align: right; }
+        
+        .menu { pointer-events: auto; background: rgba(0,0,0,0.9); padding: 60px; border: 1px solid #555; }
+        h1 { font-size: 60px; letter-spacing: 12px; margin-bottom: 10px; text-shadow: 0 0 20px #fff; }
+        
+        button { 
+            background: transparent; color: #0ff; border: 2px solid #0ff; 
+            padding: 20px 45px; margin: 15px; cursor: pointer; 
+            font-size: 22px; transition: 0.2s; letter-spacing: 4px; font-weight: bold;
+        }
+        button:hover { background: #0ff; color: #000; box-shadow: 0 0 30px #0ff; }
+        
+        #hud { position: absolute; top: 30px; width: 94%; display: flex; justify-content: space-between; font-size: 24px; color: #0ff; pointer-events: none; font-weight: bold; }
+        .bar-bg { width: 350px; height: 15px; border: 2px solid #333; margin-top: 12px; background: rgba(255,255,255,0.05); }
+        #hp-fill { background: #f00; height: 100%; width: 100%; transition: 0.1s; box-shadow: 0 0 20px #f00; }
+        #score-val { font-size: 50px; font-weight: bold; text-shadow: 0 0 15px #0ff; }
+        
+        #dialogue { position: absolute; bottom: 10%; font-size: 32px; color: #fff; text-shadow: 0 0 15px #0ff; opacity: 0; transition: 0.5s; font-weight: bold; }
+    </style>
+</head>
+<body>
+
+    <div id="hud" style="display:none;">
+        <div>
+            <div id="phase-label" style="font-size: 16px; color: #888; letter-spacing: 2px;">STATUS: ACTIVE</div>
+            HP <span id="hp-text">100</span>
+            <div class="bar-bg"><div id="hp-fill"></div></div>
+        </div>
+        <div style="text-align: right;">
+            WAR PROGRESS<br>
+            <span id="score-val">0</span> <small style="font-size: 18px;">/ <span id="target-score">MAX</span></small>
+        </div>
+    </div>
+
+    <div id="ui-overlay">
+        <div id="menu" class="menu">
+            <h1>最後的頂點</h1>
+            <p style="font-size: 16px; color: #0ff; margin-bottom: 50px; letter-spacing: 3px;">THE LAST VERTEX // EMERGENCY PROTOCOL</p>
+            <button onclick="startGame('easy')">簡單模式</button><br>
+            <button onclick="startGame('hard')">困難模式</button><br>
+            <button onclick="startGame('story')">故事模式</button>
+        </div>
+
+        <div id="story-intro" class="intro-screen" style="display:none;">
+            <div id="line-container"></div>
+            <div id="mission-box" class="mission-objective" style="display:none;"></div>
+            <div id="skip-hint" class="skip-tip">按 [ 空白鍵 SPACE ] 跳過劇情</div>
+            <br>
+            <button id="start-btn" style="display:none;" onclick="beginStoryGameplay()">領受職責並出擊</button>
+        </div>
+
+        <div id="game-over" class="menu" style="display:none;">
+            <h1 id="res-title" style="color:#f00;"></h1>
+            <p id="res-text" style="font-size:24px; margin-bottom:30px;"></p>
+            <button onclick="location.reload()">重新初始化核心</button>
+        </div>
+    </div>
+
+    <div id="dialogue"></div>
+    <canvas id="gameCanvas"></canvas>
+
+<script>
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+canvas.width = 1100; canvas.height = 750;
+
+let gameState = 'menu', mode = '', score = 0, shake = 0, keys = {};
+let player = { x: 550, y: 375, angle: 0, speed: 5.5, health: 100, charging: false, chargeTime: 0, trails: [] };
+let enemies = [], bullets = [], enemyBullets = [], particles = [], shockwaves = [], pickups = [];
+let storyPhase = 1, skipIntroRequest = false;
+
+const storyLines = [
+    "正在讀取亞空間機密檔案...",
+    "「那是人類文明最後的一道屏障。」",
+    "「圓形生命體正試圖將所有維度歸於虛無。」",
+    "你是最後的幾何守護者，你沒有恐懼，只有代碼中的職責。",
+    "即使機體碎裂，你的光譜也將在虛空中永存。"
+];
+
+// --- 繪圖函數 ---
+function drawTriangle(c, x, y, ang, size, hollow=true) {
+    c.save(); c.translate(x, y); c.rotate(ang);
+    c.beginPath();
+    c.moveTo(size, 0); c.lineTo(-size*0.75, size*0.75); c.lineTo(-size*0.75, -size*0.75);
+    c.closePath();
+    if(hollow) c.stroke(); else c.fill();
+    c.restore();
+}
+
+// --- 輸入偵測 ---
+window.addEventListener('keydown', e => {
+    keys[e.key.toLowerCase()] = true;
+    if(e.code === 'Space' && gameState === 'intro') skipIntroRequest = true;
+});
+window.addEventListener('keyup', e => keys[e.key.toLowerCase()] = false);
+window.addEventListener('mousedown', () => { if(gameState === 'playing') player.charging = true; });
+window.addEventListener('mouseup', () => {
+    if(gameState === 'playing' && player.charging) {
+        shoot(player.chargeTime > 20);
+        player.charging = false; player.chargeTime = 0;
+    }
+});
+window.addEventListener('mousemove', e => {
+    const rect = canvas.getBoundingClientRect();
+    mousePos.x = e.clientX - rect.left; mousePos.y = e.clientY - rect.top;
+});
+let mousePos = {x:0, y:0};
+
+// --- 核心邏輯 ---
+
+function startGame(m) {
+    mode = m;
+    document.getElementById('menu').style.display = 'none';
+    if(mode === 'story') runStoryIntro(); else beginGameplay();
+}
+
+async function runStoryIntro() {
+    gameState = 'intro';
+    const container = document.getElementById('line-container');
+    const introScreen = document.getElementById('story-intro');
+    introScreen.style.display = 'block';
+    
+    for(let line of storyLines) {
+        if(skipIntroRequest) break;
+        const div = document.createElement('div');
+        div.className = 'intro-line';
+        container.appendChild(div);
+        for(let char of line) {
+            if(skipIntroRequest) break;
+            div.innerHTML += char;
+            await new Promise(r => setTimeout(r, 60 + Math.random()*40));
+        }
+        await new Promise(r => setTimeout(r, 600));
+    }
+    
+    if(skipIntroRequest) {
+        container.innerHTML = "";
+        storyLines.forEach(l => {
+            const div = document.createElement('div');
+            div.className = 'intro-line'; div.innerHTML = l; container.appendChild(div);
+        });
+    }
+
+    const mission = document.getElementById('mission-box');
+    mission.style.display = 'block';
+    mission.innerHTML = "▶ 當前指令：[一階段] 肅清 10,000 分單位 // [二階段] 迎擊並達到 25,000 分以回歸機庫。";
+    document.getElementById('skip-hint').style.display = 'none';
+    document.getElementById('start-btn').style.display = 'inline-block';
+}
+
+function beginStoryGameplay() {
+    document.getElementById('story-intro').style.display = 'none';
+    document.getElementById('target-score').innerText = "25000";
+    beginGameplay();
+}
+
+function beginGameplay() {
+    gameState = 'playing';
+    document.getElementById('hud').style.display = 'flex';
+}
+
+function shoot(isBig) {
+    shake = isBig ? 30 : 7;
+    if(isBig) shockwaves.push({ x: player.x, y: player.y, r: 10, maxR: 180, alpha: 1.2 });
+    bullets.push({
+        x: player.x + Math.cos(player.angle)*25, y: player.y + Math.sin(player.angle)*25,
+        vx: Math.cos(player.angle) * (isBig ? 6.5 : 14), vy: Math.sin(player.angle) * (isBig ? 6.5 : 14),
+        isBig, radius: isBig ? 40 + player.chargeTime : 5, trails: []
+    });
+}
+
+function update() {
+    if(gameState !== 'playing') return;
+    shake *= 0.92;
+
+    let moved = false, nx = player.x, ny = player.y;
+    if(keys['w']){ ny -= player.speed; moved = true; }
+    if(keys['s']){ ny += player.speed; moved = true; }
+    if(keys['a']){ nx -= player.speed; moved = true; }
+    if(keys['d']){ nx += player.speed; moved = true; }
+    const margin = 25;
+    player.x = Math.max(margin, Math.min(canvas.width - margin, nx));
+    player.y = Math.max(margin, Math.min(canvas.height - margin, ny));
+    player.angle = Math.atan2(mousePos.y - player.y, mousePos.x - player.x);
+
+    if(moved || player.trails.length > 0) {
+        player.trails.unshift({x: player.x, y: player.y, angle: player.angle});
+        if(player.trails.length > 10) player.trails.pop();
+    }
+
+    if(player.charging) {
+        player.chargeTime = Math.min(player.chargeTime + 1.8, 100);
+        if(player.chargeTime > 40) shake += 1.2;
+    }
+
+    if(mode === 'story') {
+        if(score >= 10000 && storyPhase === 1) {
+            storyPhase = 2;
+            document.getElementById('phase-label').innerText = "STATUS: CRITICAL - ENEMY COUNTERATTACK";
+            showDialogue("「警告：亞空間屏障已破裂！圓形集群展開全面反擊！」");
+            shake = 60;
+        }
+        if(score >= 25000) victory();
+    }
+
+    let rate = (mode==='easy'? 0.04 : 0.08);
+    if(mode==='story') rate = storyPhase === 1 ? 0.06 : 0.14;
+    if(Math.random() < rate) {
+        const side = Math.floor(Math.random()*4);
+        let x, y;
+        if(side===0){x=Math.random()*canvas.width; y=-50;}
+        else if(side===1){x=canvas.width+50; y=Math.random()*canvas.height;}
+        else if(side===2){x=Math.random()*canvas.width; y=canvas.height+50;}
+        else {x=-50; y=Math.random()*canvas.height;}
+        enemies.push({x, y, t:0});
+    }
+
+    pickups.forEach((pk, pki) => {
+        if(Math.hypot(player.x - pk.x, player.y - pk.y) < 30) {
+            player.health = Math.min(100, player.health + 30);
+            createExplosion(player.x, player.y, '#0f0', 20);
+            pickups.splice(pki, 1);
+            updateHUD();
+        }
+    });
+
+    bullets.forEach((b, bi) => {
+        b.x += b.vx; b.y += b.vy;
+        b.trails.unshift({x: b.x, y: b.y});
+        if(b.trails.length > 15) b.trails.pop();
+        if(b.x<-250||b.x>canvas.width+250||b.y<-250||b.y>canvas.height+250) bullets.splice(bi, 1);
+    });
+
+    enemies.forEach((e, ei) => {
+        const d = Math.hypot(player.x-e.x, player.y-e.y);
+        e.x += (player.x-e.x)/d * (storyPhase===2? 3.6 : 2.5);
+        e.y += (player.y-e.y)/d * (storyPhase===2? 3.6 : 2.5);
+
+        if(mode==='hard' || (mode==='story' && storyPhase===2)) {
+            e.t++; if(e.t % 80 === 0) enemyBullets.push({x: e.x, y: e.y, vx: (player.x-e.x)/d*5.5, vy: (player.y-e.y)/d*5.5});
+        }
+
+        bullets.forEach((b, bi) => {
+            const hit = Math.hypot(b.x-e.x, b.y-e.y);
+            if((!b.isBig && hit < 28) || (b.isBig && hit < b.radius)) {
+                // 回血包 5% 機率 (0.05)
+                const canDrop = (mode==='hard' || (mode==='story' && storyPhase === 2) || (mode==='easy' && score >= 20000));
+                if(canDrop && Math.random() < 0.05) {
+                    pickups.push({ x: e.x, y: e.y, t: 0 });
+                }
+                enemies.splice(ei, 1); if(!b.isBig) bullets.splice(bi, 1);
+                score += 100; shake = b.isBig? 20:6;
+                createExplosion(e.x, e.y, '#f33', b.isBig? 35 : 12);
+                updateHUD();
+            }
+        });
+        if(d < 25) { player.health -= 1.5; updateHUD(); if(player.health<=0) gameOver(); }
+    });
+
+    enemyBullets.forEach((eb, ebi) => {
+        eb.x += eb.vx; eb.y += eb.vy;
+        if(Math.hypot(eb.x-player.x, eb.y-player.y)<20) {
+            player.health-=15; shake=25; enemyBullets.splice(ebi, 1); updateHUD();
+            if(player.health<=0) gameOver();
+        }
+    });
+
+    shockwaves.forEach((s, si) => { s.r += 12; s.alpha -= 0.04; if(s.alpha <= 0) shockwaves.splice(si, 1); });
+    particles.forEach((p, pi) => { p.x+=p.vx; p.y+=p.vy; p.l--; if(p.l<=0) particles.splice(pi, 1); });
+}
+
+function createExplosion(x, y, color, count) {
+    for(let i=0; i<count; i++) particles.push({x, y, vx:(Math.random()-0.5)*15, vy:(Math.random()-0.5)*15, l:40, color});
+}
+
+function updateHUD() {
+    document.getElementById('hp-fill').style.width = Math.max(0, player.health)+"%";
+    document.getElementById('hp-text').innerText = Math.ceil(Math.max(0, player.health));
+    document.getElementById('score-val').innerText = score;
+}
+
+function showDialogue(t) {
+    const d = document.getElementById('dialogue'); d.innerText = t; d.style.opacity = 1;
+    setTimeout(()=> d.style.opacity = 0, 4500);
+}
+
+function gameOver() { gameState='over'; document.getElementById('game-over').style.display='block'; document.getElementById('res-title').innerText="三角形：已碎裂"; document.getElementById('res-text').innerText="你在第 "+score+" 單位時間停止了運作。職責終止。"; }
+function victory() { gameState='over'; document.getElementById('game-over').style.display='block'; document.getElementById('res-title').innerText="傳奇勝利"; document.getElementById('res-title').style.color="#0ff"; document.getElementById('res-text').innerText="25,000 單位的威脅已肃清。維度穩定。"; }
+
+function draw() {
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.fillStyle = '#010101'; ctx.fillRect(0,0,canvas.width,canvas.height);
+
+    if(gameState==='playing') {
+        if(shake > 0) ctx.translate((Math.random()-0.5)*shake, (Math.random()-0.5)*shake);
+
+        player.trails.forEach((t, i) => { ctx.strokeStyle = `rgba(0, 255, 255, ${0.15 - i*0.015})`; drawTriangle(ctx, t.x, t.y, t.angle, 20); });
+
+        pickups.forEach(pk => {
+            pk.t += 0.1; const pulse = Math.sin(pk.t) * 5;
+            ctx.strokeStyle = '#0f0'; ctx.lineWidth = 3; ctx.shadowBlur = 15; ctx.shadowColor = "#0f0";
+            ctx.strokeRect(pk.x-10-pulse/2, pk.y-10-pulse/2, 20+pulse, 20+pulse);
+            ctx.beginPath(); ctx.moveTo(pk.x-6, pk.y); ctx.lineTo(pk.x+6, pk.y); ctx.moveTo(pk.x, pk.y-6); ctx.lineTo(pk.x, pk.y+6); ctx.stroke(); ctx.shadowBlur = 0;
+        });
+
+        shockwaves.forEach(s => { ctx.strokeStyle = `rgba(0, 255, 255, ${s.alpha})`; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(s.x, s.y, s.r, 0, Math.PI*2); ctx.stroke(); });
+
+        bullets.forEach(b => {
+            ctx.lineWidth = b.isBig ? 5 : 2;
+            b.trails.forEach((t, i) => {
+                ctx.strokeStyle = b.isBig ? `rgba(0, 255, 255, ${0.9-i/15})` : `rgba(255, 255, 255, ${0.8-i/15})`;
+                if(i===0) ctx.moveTo(t.x, t.y); else ctx.lineTo(t.x, t.y);
+            });
+            ctx.stroke();
+            if(b.isBig) { ctx.fillStyle = 'rgba(0, 255, 255, 0.15)'; ctx.beginPath(); ctx.arc(b.x, b.y, b.radius, 0, Math.PI*2); ctx.fill(); }
+        });
+
+        ctx.strokeStyle = 'white'; ctx.lineWidth = 4; ctx.shadowBlur = player.charging ? 25 : 8; ctx.shadowColor = "#0ff";
+        drawTriangle(ctx, player.x, player.y, player.angle, 22); ctx.shadowBlur = 0;
+
+        if(player.charging) {
+            ctx.fillStyle = '#0ff'; const f = (player.chargeTime/100)*40;
+            ctx.save(); ctx.translate(player.x, player.y); ctx.rotate(player.angle);
+            ctx.beginPath(); ctx.moveTo(22, 0); ctx.lineTo(22-f, f*0.4); ctx.lineTo(22-f, -f*0.4); ctx.fill(); ctx.restore();
+        }
+
+        enemies.forEach(e => { ctx.strokeStyle='#f33'; ctx.lineWidth=3; ctx.beginPath(); ctx.arc(e.x, e.y, 18, 0, Math.PI*2); ctx.stroke(); });
+        enemyBullets.forEach(eb => { ctx.fillStyle='#ffff00'; ctx.shadowBlur=15; ctx.shadowColor="#ffff00"; ctx.beginPath(); ctx.arc(eb.x, eb.y, 7, 0, Math.PI*2); ctx.fill(); ctx.shadowBlur=0; });
+        particles.forEach(p => { ctx.fillStyle=p.color; ctx.globalAlpha=p.l/40; ctx.fillRect(p.x, p.y, 4, 4); ctx.globalAlpha=1; });
+    }
+    requestAnimationFrame(draw); update();
+}
+draw();
+</script>
+</body>
+</html>
